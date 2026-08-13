@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# Revelux pre-push gate.
+#
+# Revelux is a security tool: people act on its CLEAN verdicts, so shipping a
+# regression here is worse than shipping a late fix. Every push must therefore
+# be preceded by a security review and an explicit human approval.
+#
+# Enabled via a versioned hooks path, so a fresh clone gets it too:
+#
+#     git config core.hooksPath .githooks
+#
+# Once the review is done and the owner has approved this specific push:
+#
+#     REVELUX_PUSH_APPROVED=1 git push ...
+#
+# The variable deliberately has to be set per push - it is not stored in
+# config, so approval cannot silently carry over to a later, unreviewed push.
+
+if [ "$REVELUX_PUSH_APPROVED" = "1" ]; then
+    echo "pre-push: approval flag present - proceeding."
+    exit 0
+fi
+
+cat >&2 <<'MSG'
+
+  Push blocked: security review + owner approval required.
+
+  Revelux is a security tool - a missed regression means someone trusts a
+  CLEAN verdict they should not. Before pushing:
+
+    1. Run a security review of the outgoing changes.
+    2. Re-run the detection tests:
+         python3 scanner.py test_samples      # expect 8 CRITICAL / 2 WARNING / 5 CLEAN
+         echo "normal text" | python3 outbound_gate.py --quiet
+    3. Confirm every known bypass is either fixed or documented in the
+       README's Limitations section.
+    4. Get the repository owner's explicit approval for this push.
+
+  Then push with the approval flag set:
+
+      REVELUX_PUSH_APPROVED=1 git push ...
+
+MSG
+exit 1
