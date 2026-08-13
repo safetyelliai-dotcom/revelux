@@ -36,6 +36,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parsers import md_parser, docx_parser, pptx_parser, pdf_parser, xlsx_parser, eml_parser
+from patterns import score_stitched_hidden
 
 PARSERS = {
     ".md": md_parser.parse,
@@ -51,11 +52,21 @@ PARSERS = {
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
+def add_stitched_pass(findings):
+    """Re-check a file's hidden content with all fragments stitched back
+    together, catching instructions deliberately split across adjacent
+    hidden runs/cells/spans to dodge the per-fragment scan."""
+    fragments = [hl["text_preview"] for hl in findings["hidden_layers"]]
+    already_found = {h for hl in findings["hidden_layers"] for h in hl["instruction_pattern_hits"]}
+    findings["stitched_pattern_hits"] = score_stitched_hidden(fragments, already_found)
+    return findings
+
+
 def classify_risk(findings):
     """Roll a file's raw findings up into one overall risk level."""
     has_pattern_hit = any(hl["instruction_pattern_hits"] for hl in findings["hidden_layers"])
     has_critical_unicode = any(u["severity"] == "critical" for u in findings["unicode_anomalies"])
-    if has_pattern_hit or has_critical_unicode:
+    if has_pattern_hit or has_critical_unicode or findings.get("stitched_pattern_hits"):
         return "CRITICAL"
 
     has_high_unicode = any(u["severity"] == "high" for u in findings["unicode_anomalies"])
@@ -91,7 +102,10 @@ def scan_folder(root, extensions):
                     "homoglyph_words": [],
                     "error": f"{type(e).__name__}: {e}",
                 }
-            findings["risk"] = "ERROR" if "error" in findings else classify_risk(findings)
+            if "error" in findings:
+                findings["risk"] = "ERROR"
+            else:
+                findings["risk"] = classify_risk(add_stitched_pass(findings))
             results.append(findings)
     return results
 
@@ -130,6 +144,10 @@ def print_report(results):
             print(f"      preview: {hl['text_preview']!r}")
             if hl["instruction_pattern_hits"]:
                 print(f"      matched: {hl['instruction_pattern_hits']}")
+
+        if r.get("stitched_pattern_hits"):
+            print("    instruction split across adjacent hidden fragments (only matches once stitched back together)")
+            print(f"      matched: {r['stitched_pattern_hits']}")
 
         for u in r["unicode_anomalies"]:
             print(f"    unicode [{u['severity']}] {u['label']} ({u['codepoint']} {u['char_name']}) x{u['count']}")

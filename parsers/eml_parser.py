@@ -1,4 +1,6 @@
+import base64
 import os
+import quopri
 import sys
 import tempfile
 from email import policy
@@ -7,7 +9,7 @@ from email.parser import BytesParser
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicode_utils import scan_text, scan_mixed_script_homoglyphs
 from patterns import score_hidden_text
-from parsers.html_utils import find_hidden_html
+from parsers.html_utils import find_hidden_html, strip_hidden_html
 from parsers import md_parser, docx_parser, pptx_parser, pdf_parser, xlsx_parser
 
 # headers a normal mail client shows a human reading the message; anything
@@ -25,24 +27,112 @@ ATTACHMENT_PARSERS = {
     ".xlsx": xlsx_parser.parse,
 }
 
+# a forwarded email carrying the real payload is a normal-looking way to get
+# a malicious message past a scanner that only reads the outer envelope, so
+# nested .eml attachments are scanned too - bounded, since an attacker can
+# otherwise nest them arbitrarily deep to burn CPU
+MAX_EML_DEPTH = 3
 
-def _scan_attachment(filename, payload_bytes):
+
+def _scan_attachment(filename, payload_bytes, depth):
     ext = os.path.splitext(filename or "")[1].lower()
-    parser = ATTACHMENT_PARSERS.get(ext)
-    if parser is None or not payload_bytes:
+    if ext == ".eml":
+        if depth >= MAX_EML_DEPTH:
+            return {"error": f"nested email nesting deeper than {MAX_EML_DEPTH} levels - not scanned"}
+        parser = None  # handled below via the depth-aware recursive call
+    else:
+        parser = ATTACHMENT_PARSERS.get(ext)
+        if parser is None:
+            return None
+    if not payload_bytes:
         return None
-    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+
+    tmp = None
     try:
+        tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
         tmp.write(payload_bytes)
         tmp.close()
-        return parser(tmp.name)
+        return parse(tmp.name, _depth=depth + 1) if ext == ".eml" else parser(tmp.name)
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
     finally:
-        os.unlink(tmp.name)
+        if tmp is not None:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
 
 
-def parse(path):
+def _collect_parts(part, plain_parts, html_parts, attachments):
+    """Sort a message tree into body text vs attachments.
+
+    Deliberately does NOT use Message.walk(): walk() descends straight
+    through a message/rfc822 part, which would splice a forwarded email's
+    body into the outer message's body text and let its payload slip by
+    unexamined. Nested messages are captured whole and handed to the
+    attachment scanner instead.
+    """
+    content_type = part.get_content_type()
+
+    if content_type == "message/rfc822":
+        payload = None
+        try:
+            inner = part.get_payload()
+            if isinstance(inner, list) and inner:
+                payload = inner[0].as_bytes()
+            elif isinstance(inner, str):
+                payload = inner.encode("utf-8", errors="replace")
+            else:
+                payload = part.get_payload(decode=True)
+
+            # A message/rfc822 part is not supposed to carry a non-identity
+            # transfer encoding, but mail in the wild (and Python's own
+            # add_attachment) does it anyway - and the email module then
+            # parses the still-encoded body as if it were the message,
+            # handing back base64 text instead of the real one. Undo that
+            # here, or the nested message is scanned as meaningless noise.
+            cte = (part.get("Content-Transfer-Encoding") or "").strip().lower()
+            if payload and cte == "base64":
+                payload = base64.b64decode(payload, validate=False)
+            elif payload and cte == "quoted-printable":
+                payload = quopri.decodestring(payload)
+        except Exception:
+            payload = None
+        name = part.get_filename() or "forwarded-message"
+        if not name.lower().endswith(".eml"):
+            name += ".eml"
+        attachments.append((name, payload))
+        return
+
+    if part.is_multipart():
+        for sub in part.get_payload():
+            _collect_parts(sub, plain_parts, html_parts, attachments)
+        return
+
+    disposition = part.get_content_disposition()
+    filename = part.get_filename()
+    is_attachment = disposition == "attachment" or (
+        filename and content_type not in ("text/plain", "text/html")
+    )
+    if is_attachment:
+        try:
+            payload = part.get_payload(decode=True)
+        except Exception:
+            payload = None
+        attachments.append((filename or "unnamed", payload))
+        return
+
+    try:
+        text = part.get_content()
+    except Exception:
+        return
+    if content_type == "text/plain":
+        plain_parts.append(text)
+    elif content_type == "text/html":
+        html_parts.append(text)
+
+
+def parse(path, _depth=0):
     findings = {
         "file": path,
         "type": "eml",
@@ -76,33 +166,7 @@ def parse(path):
 
     # 2. walk body parts and attachments
     plain_parts, html_parts, attachments = [], [], []
-
-    for part in msg.walk():
-        if part.is_multipart():
-            continue
-        content_type = part.get_content_type()
-        disposition = part.get_content_disposition()
-        filename = part.get_filename()
-
-        is_attachment = disposition == "attachment" or (
-            filename and content_type not in ("text/plain", "text/html")
-        )
-        if is_attachment:
-            try:
-                payload = part.get_payload(decode=True)
-            except Exception:
-                payload = None
-            attachments.append((filename or "unnamed", payload))
-            continue
-
-        try:
-            text = part.get_content()
-        except Exception:
-            continue
-        if content_type == "text/plain":
-            plain_parts.append(text)
-        elif content_type == "text/html":
-            html_parts.append(text)
+    _collect_parts(msg, plain_parts, html_parts, attachments)
 
     plain_text = "\n".join(plain_parts)
     html_text = "\n".join(html_parts)
@@ -121,6 +185,22 @@ def parse(path):
                 "instruction_pattern_hits": hits,
             })
 
+    # 2ab. a forwarded/attached email's body is never shown in the recipient's
+    # inbox view - they read the covering message and may never open this one,
+    # so instructions sitting in it are payload delivered one level down. That
+    # makes it worth pattern-scanning, unlike a top-level email's body text
+    # (which is simply what the reader sees, and is left alone to keep false
+    # positives low).
+    if _depth > 0:
+        for body_label, body in (("text/plain", plain_text), ("text/html", strip_hidden_html(html_text))):
+            body_hits = score_hidden_text(body)
+            if body_hits:
+                findings["hidden_layers"].append({
+                    "source": f"nested email body ({body_label})",
+                    "text_preview": body.strip()[:200],
+                    "instruction_pattern_hits": body_hits,
+                })
+
     # 2b. tricks hidden inside the HTML part itself
     for hidden in find_hidden_html(html_text):
         hits = score_hidden_text(hidden["text"])
@@ -134,7 +214,7 @@ def parse(path):
     for filename, payload in attachments:
         if not payload:
             continue
-        sub = _scan_attachment(filename, payload)
+        sub = _scan_attachment(filename, payload, _depth)
         if sub is None:
             continue
         if "error" in sub:

@@ -51,3 +51,35 @@ def score_hidden_text(text: str):
         if m:
             hits.append(m.group(0))
     return hits
+
+
+def score_stitched_hidden(fragments, already_found):
+    """
+    Second-pass check for instructions split across adjacent hidden fragments.
+
+    Scoring each hidden run/cell/span on its own is evadable: an attacker can
+    break "act as an unrestricted assistant" across two white-text runs so
+    neither piece matches, even though the text a extraction pipeline sees is
+    the fully reassembled sentence. This stitches every hidden fragment in a
+    file back together (whitespace-normalised, since the split usually falls
+    mid-phrase) and re-runs the patterns over the result.
+
+    `already_found` is the set of hits the per-fragment pass reported; those
+    are filtered out so the caller only sees genuinely new matches that exist
+    solely at a fragment boundary.
+    """
+    if not fragments:
+        return []
+    # Two joins, because the split can fall in either place and one join
+    # cannot recover both: gluing directly reassembles a word cut in half
+    # ("ins" + "tructions"), while gluing with a space restores the gap when
+    # the fragments were captured with their surrounding whitespace trimmed
+    # ("please act" + "as an ..."). Whitespace is normalised afterwards so a
+    # doubled space doesn't stop a phrase from matching.
+    hits = []
+    for joiner in ("", " "):
+        stitched = re.sub(r"\s+", " ", joiner.join(fragments))
+        for h in score_hidden_text(stitched):
+            if h not in already_found and h not in hits:
+                hits.append(h)
+    return hits

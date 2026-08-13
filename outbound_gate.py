@@ -36,7 +36,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from unicode_utils import scan_text, scan_mixed_script_homoglyphs
-from patterns import score_hidden_text
+from patterns import score_hidden_text, score_stitched_hidden
 from parsers.html_utils import find_hidden_html, strip_hidden_html
 
 RISK_EMOJI = {"CRITICAL": "\U0001F534", "WARNING": "\U0001F7E1", "INFO": "\U0001F535", "CLEAN": "\U0001F7E2"}
@@ -46,7 +46,7 @@ EXIT_CODE = {"CRITICAL": 2, "WARNING": 1, "INFO": 0, "CLEAN": 0}
 def classify_risk(findings):
     has_hidden_pattern_hit = any(hl["instruction_pattern_hits"] for hl in findings["hidden_layers"])
     has_critical_unicode = any(u["severity"] == "critical" for u in findings["unicode_anomalies"])
-    if has_hidden_pattern_hit or has_critical_unicode:
+    if has_hidden_pattern_hit or has_critical_unicode or findings["stitched_pattern_hits"]:
         return "CRITICAL"
 
     has_high_unicode = any(u["severity"] == "high" for u in findings["unicode_anomalies"])
@@ -70,6 +70,7 @@ def scan_output(text, label="output"):
         "scanned_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "direction": "outbound",
         "hidden_layers": [],
+        "stitched_pattern_hits": [],
         "visible_pattern_hits": [],
         "unicode_anomalies": [],
         "homoglyph_words": [],
@@ -82,6 +83,13 @@ def scan_output(text, label="output"):
             "text_preview": hidden["text"][:200],
             "instruction_pattern_hits": hits,
         })
+
+    # catch instructions split across adjacent hidden blocks to dodge the
+    # per-block scan above
+    findings["stitched_pattern_hits"] = score_stitched_hidden(
+        [hl["text_preview"] for hl in findings["hidden_layers"]],
+        {h for hl in findings["hidden_layers"] for h in hl["instruction_pattern_hits"]},
+    )
 
     # scan visible text with anything already flagged as hidden stripped
     # out, so a phrase isn't counted both as hidden and as merely-visible
@@ -106,6 +114,10 @@ def print_report(findings):
         print(f"    preview: {hl['text_preview']!r}")
         if hl["instruction_pattern_hits"]:
             print(f"    matched: {hl['instruction_pattern_hits']}")
+
+    if findings["stitched_pattern_hits"]:
+        print("  instruction split across adjacent hidden blocks (only matches once stitched back together)")
+        print(f"    matched: {findings['stitched_pattern_hits']}")
 
     if findings["visible_pattern_hits"]:
         print("  visible text contains instruction-like phrasing (not hidden, but unusual in fresh AI output)")
