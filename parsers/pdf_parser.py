@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicode_utils import scan_text, scan_mixed_script_homoglyphs
 from patterns import score_hidden_text
+from limits import check_file_size
 
 import pymupdf
 
@@ -108,6 +109,7 @@ def parse(path):
         "homoglyph_words": [],
     }
 
+    check_file_size(path)
     doc = pymupdf.open(path)
     full_text_for_unicode_scan = []
 

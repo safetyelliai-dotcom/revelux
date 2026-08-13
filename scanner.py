@@ -37,6 +37,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parsers import md_parser, docx_parser, pptx_parser, pdf_parser, xlsx_parser, eml_parser
 from patterns import score_stitched_hidden
+import limits
 
 PARSERS = {
     ".md": md_parser.parse,
@@ -171,7 +172,31 @@ def main():
         default="md,markdown,txt,docx,pptx,pdf,xlsx,eml",
         help="Comma-separated list of extensions to scan (default: md,markdown,txt,docx,pptx,pdf,xlsx,eml)",
     )
+    ap.add_argument(
+        "--max-file-mb",
+        type=float,
+        default=limits.MAX_FILE_BYTES / (1024 * 1024),
+        help="Skip files larger than this on disk (default: 100)",
+    )
+    ap.add_argument(
+        "--max-uncompressed-mb",
+        type=float,
+        default=limits.MAX_UNCOMPRESSED_BYTES / (1024 * 1024),
+        help="Skip docx/pptx/xlsx archives expanding beyond this (default: 500)",
+    )
+    ap.add_argument(
+        "--max-ratio",
+        type=float,
+        default=limits.MAX_COMPRESSION_RATIO,
+        help="Skip archives whose expansion ratio exceeds this (default: 200)",
+    )
     args = ap.parse_args()
+
+    limits.configure(
+        max_file_bytes=int(args.max_file_mb * 1024 * 1024),
+        max_uncompressed_bytes=int(args.max_uncompressed_mb * 1024 * 1024),
+        max_ratio=args.max_ratio,
+    )
 
     extensions = {("." + e.strip().lstrip(".")) for e in args.ext.split(",") if e.strip()}
     if not os.path.isdir(args.folder):

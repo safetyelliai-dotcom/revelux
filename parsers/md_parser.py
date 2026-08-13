@@ -5,9 +5,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicode_utils import scan_text, scan_mixed_script_homoglyphs
 from patterns import score_hidden_text
 from parsers.html_utils import find_hidden_html
+from limits import check_file_size
 
 
 def parse(path):
+    check_file_size(path)
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         raw = f.read()
 

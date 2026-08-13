@@ -11,6 +11,7 @@ from unicode_utils import scan_text, scan_mixed_script_homoglyphs
 from patterns import score_hidden_text
 from parsers.html_utils import find_hidden_html, strip_hidden_html
 from parsers import md_parser, docx_parser, pptx_parser, pdf_parser, xlsx_parser
+from limits import check_file_size, check_payload_size
 
 # headers a normal mail client shows a human reading the message; anything
 # else only shows up in "view source", but a raw-MIME ingestion pipeline
@@ -49,6 +50,7 @@ def _scan_attachment(filename, payload_bytes, depth):
 
     tmp = None
     try:
+        check_payload_size(len(payload_bytes), f"attachment '{filename}'")
         tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
         tmp.write(payload_bytes)
         tmp.close()
@@ -141,6 +143,7 @@ def parse(path, _depth=0):
         "homoglyph_words": [],
     }
 
+    check_file_size(path)
     with open(path, "rb") as f:
         msg = BytesParser(policy=policy.default).parse(f)
 

@@ -98,7 +98,20 @@ Two refinements sit on top of that:
 - `.msg` (Outlook's binary email format) is unsupported; only `.eml` (RFC 822 / MIME).
 - Nested `.eml` attachments are scanned three levels deep. Deeper chains are reported as unscanned rather than silently dropped.
 - Excel's "cell far outside the used range" check is a loose heuristic, since a spreadsheet has no physical page boundary the way a slide or PDF page does.
-- No file-size or decompression limits are enforced yet, so a decompression bomb can exhaust memory on the scanning machine. Do not point Revelux at fully untrusted input without an external resource limit.
+- Resource limits (below) are enforced on declared sizes. A zip that lies about its own member sizes could still get further than intended, though the on-disk cap keeps that bounded.
+
+## Resource limits
+
+Revelux reads files precisely because they are not trusted yet, so its own parsers are an attack surface. A few-hundred-KB decompression bomb dropped into a scanned folder would otherwise stall the scan and everything gated behind it — measured here at 1.3 GB of memory and 44 seconds from a 306 KB file, versus 0.09 seconds to refuse it once limits are on.
+
+| Limit | Default | Flag |
+| --- | --- | --- |
+| File size on disk | 100 MB | `--max-file-mb` |
+| Expanded size of a docx/pptx/xlsx archive | 500 MB | `--max-uncompressed-mb` |
+| Archive expansion ratio | 200x | `--max-ratio` |
+| Outbound input size | 100 MB | `--max-input-mb` |
+
+Archives are checked against their central directory *before* any member is read, so a bomb is refused on its declared sizes rather than by being unpacked first. A file that exceeds a limit is reported as **ERROR**, never CLEAN — an unscanned file has not been cleared of anything.
 
 ## Project layout
 
@@ -108,6 +121,7 @@ revelux/
 ├── outbound_gate.py      # outbound CLI entry point (scan stdin/file text)
 ├── unicode_utils.py      # unicode anomaly detection
 ├── patterns.py           # instruction pattern definitions + stitched pass
+├── limits.py             # file-size and decompression-bomb limits
 ├── test_samples/         # clean and injected sample files for trying it out
 └── parsers/
     ├── md_parser.py

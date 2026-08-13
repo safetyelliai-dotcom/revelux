@@ -1,12 +1,12 @@
 import os
 import re
 import sys
-import zipfile
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicode_utils import scan_text, scan_mixed_script_homoglyphs
 from patterns import score_hidden_text
+from limits import checked_zipfile
 from parsers.ooxml_common import extract_metadata_fields, color_is_near_white
 
 S_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -173,7 +173,7 @@ def parse(path):
         "homoglyph_words": [],
     }
 
-    with zipfile.ZipFile(path) as zf:
+    with checked_zipfile(path) as zf:
         shared_strings = _load_shared_strings(zf)
         fonts, cell_xfs = _load_styles(zf)
         sheet_map = _sheet_name_map(zf)

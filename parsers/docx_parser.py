@@ -1,11 +1,11 @@
 import os
 import sys
-import zipfile
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicode_utils import scan_text, scan_mixed_script_homoglyphs
 from patterns import score_hidden_text
+from limits import checked_zipfile
 from parsers.ooxml_common import extract_metadata_fields, NEAR_WHITE
 
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -81,7 +81,7 @@ def parse(path):
         "homoglyph_words": [],
     }
 
-    with zipfile.ZipFile(path) as zf:
+    with checked_zipfile(path) as zf:
         full_text_for_unicode_scan = []
 
         if "word/document.xml" in zf.namelist():

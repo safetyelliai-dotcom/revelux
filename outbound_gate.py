@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from unicode_utils import scan_text, scan_mixed_script_homoglyphs
 from patterns import score_hidden_text, score_stitched_hidden
 from parsers.html_utils import find_hidden_html, strip_hidden_html
+import limits
 
 RISK_EMOJI = {"CRITICAL": "\U0001F534", "WARNING": "\U0001F7E1", "INFO": "\U0001F535", "CLEAN": "\U0001F7E2"}
 EXIT_CODE = {"CRITICAL": 2, "WARNING": 1, "INFO": 0, "CLEAN": 0}
@@ -141,15 +142,32 @@ def main():
     ap.add_argument("--json", help="Also write the full findings as JSON to this path")
     ap.add_argument("--log", help="Append this scan's findings as one JSON line to this file (for a future monitoring/history layer)")
     ap.add_argument("--quiet", action="store_true", help="Only print the one-line verdict, no detail")
+    ap.add_argument(
+        "--max-input-mb",
+        type=float,
+        default=limits.MAX_FILE_BYTES / (1024 * 1024),
+        help="Refuse input larger than this (default: 100)",
+    )
     args = ap.parse_args()
 
-    if args.file:
-        with open(args.file, "r", encoding="utf-8", errors="replace") as f:
-            text = f.read()
-        label = args.file
-    else:
-        text = sys.stdin.read()
-        label = "<stdin>"
+    limits.configure(max_file_bytes=int(args.max_input_mb * 1024 * 1024))
+
+    try:
+        if args.file:
+            limits.check_file_size(args.file)
+            with open(args.file, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            label = args.file
+        else:
+            # read one byte past the cap so an oversized stream is refused
+            # rather than silently scanned in truncated form - a truncated
+            # scan could report CLEAN on text whose payload was cut off
+            text = sys.stdin.read(limits.MAX_FILE_BYTES + 1)
+            limits.check_payload_size(len(text.encode("utf-8", errors="replace")), "stdin input")
+            label = "<stdin>"
+    except limits.LimitExceeded as e:
+        print(f"⚪ [ERROR] input not scanned: {e}", file=sys.stderr)
+        sys.exit(2)
 
     findings = scan_output(text, label=label)
 
